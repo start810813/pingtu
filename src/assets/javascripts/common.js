@@ -1,47 +1,35 @@
 import { render, showWhile, getBase64 } from './util.js'
 
-
-// Objects
-class Image {
-  constructor (file) {
-    this.file = file
-    this.base64 = null
-  }
-  async setBase64 () {
-    this.base64 = await getBase64(this.file)
-  }
+class PreviewerHandlerInterface { //Observer
+  handle () {}
 }
 
-class Previewer {
-  constructor (sliderElement, uploadItemElement) {
-    this.slider = sliderElement
-    this.uploadItem = uploadItemElement
-    this.images = []
+// js繼承/實作多個得這樣做
+class PreviewerInterface extends EventTarget {
+  constructor () {
+    super()
+    this.name = null
   }
+  getElement (index) {}
+}
 
-  async appendImages (files) {
-    const images = []
-    for (const file of files) {
-      const image = new Image(file)
-      await image.setBase64()
-      images.push(image)
-    }
-    this.images = [...this.images, ...images]
-    if (getSortType() === 'byName') {
-      this.images = sortImageByName(this.images)
-    }
+// Objects
+class Image extends PreviewerInterface {
+  constructor (file) {
+    super()
+    this.observers = []
+    this.file = file
+    this.name = file.name
+    this.encoded = null
   }
-
-  preview () {
-    clearPreviewElement()
-    this.images.forEach((image, index) => {
-      this.create(image, index)
-    })
+  async getEncodedFile() {
+    if (this.encoded) return this.encoded
+    this.encoded = await getBase64(this.file)
+    return this.encoded
   }
-  
-  create (image, idx) {
-    const fileName = image.file.name
-    const base64 = image.base64
+  async getElement (index) {
+    const fileName = this.name
+    const base64 = await this.getEncodedFile()
     const containerDiv = document.createElement('div')
     const previewImageDiv = document.createElement('div')
     const removeIconDiv = document.createElement('div')
@@ -50,14 +38,17 @@ class Previewer {
     const fileNameDiv = document.createElement('div')
 
     removeIconDiv.classList.add('remove-icon')
-    removeIconDiv.onclick = () => this.remove(idx)
+    removeIconDiv.onclick = () => {
+      const event = new CustomEvent('remove', { detail: index })
+      this.dispatchEvent(event)
+    }
     previewImageDiv.classList.add('preview-image')
     previewImageDiv.style.backgroundImage = `url('${base64}')`
     previewImageDiv.appendChild(removeIconDiv)
     realImageImg.classList.add('real-image', 'hide')
     realImageImg.src = base64
     fileSeqDiv.classList.add('file-seq')
-    fileSeqDiv.innerText = idx + 1
+    fileSeqDiv.innerText = index + 1
     fileNameDiv.classList.add('file-name')
     fileNameDiv.innerText = fileName
     containerDiv.classList.add('image-container')
@@ -66,17 +57,53 @@ class Previewer {
     containerDiv.appendChild(fileSeqDiv)
     containerDiv.appendChild(fileNameDiv)
 
-    render(this.uploadItem, containerDiv, 'beforebegin')
+    return containerDiv
+  }
+}
+
+class Slider extends PreviewerHandlerInterface {
+  constructor (sliderElement) {
+    super()
+    this.slider = sliderElement
+    this.previewers = []
+    this.removeHandler = (event) => this.handle(event)
+  }
+
+  async appendPreviewer (previewer) {
+    previewer.addEventListener('remove', this.removeHandler)
+    this.previewers = [...this.previewers, previewer]
+    if (getSortType() === 'byName') {
+      this.previewers = sortPreviewerByName(this.previewers)
+    }
+  }
+
+  preview () {
+    clearPreviewElement()
+    this.create()
+  }
+  
+  async create (index) {
+    const uploadItem = getUploadItem()
+    for (index in this.previewers) {
+      const previewer = this.previewers[index]
+      const containerDiv = await previewer.getElement(Number(index))
+      render(uploadItem, containerDiv, 'beforebegin')
+    }
     this.slider.scrollLeft = this.slider.scrollWidth
   }
 
-  remove (idx) {
-    this.images.splice(idx, 1); 
+  handle (event) {
+    const index = event.detail
+    const deleted = this.previewers.splice(index, 1)
+    deleted[0].removeEventListener('remove', this.removeHandler)
     this.preview()
   }
 
   clear () {
-    this.images = []
+    this.previewers.forEach((previewer) => {
+      previewer.removeEventListener('remove', this.removeHandler)
+    })
+    this.previewers = []
     clearPreviewElement()
     hideResultArea()
   }
@@ -84,12 +111,12 @@ class Previewer {
 
 // main program
 window.addEventListener('load', () => {
-  const previewer = new Previewer(document.querySelector('.preview-area'), document.querySelector('.preview-area .upload-item'))
+  const slider = new Slider(document.querySelector('.preview-area'))
   document.querySelector('#addFileButton').addEventListener('click', triggerUpload)
-  document.querySelector('#clearButton').addEventListener('click', previewer.clear.bind(previewer))
+  document.querySelector('#clearButton').addEventListener('click', slider.clear.bind(slider))
   document.querySelector('#submitButton').addEventListener('click', pingtu)
   document.querySelector('#uploadFile').addEventListener('change', function () {
-    uploadNewFile(this, previewer)
+    uploadNewFile(this, slider)
   })
 })
 
@@ -143,6 +170,10 @@ const getSortType = () => {
   return document.querySelector('input[type=radio][name="sort"]:checked').value
 }
 
+const getUploadItem = () => {
+  return document.querySelector('.preview-area .upload-item')
+}
+
 const hideResultArea = () => {
   document.querySelector('.result-area').classList.add('hide')
 }
@@ -157,13 +188,16 @@ const clearPreviewElement = () => {
   })
 }
 
-const uploadNewFile = async (input, previewer) => {
+const uploadNewFile = (input, slider) => {
   if (input.files.length > 0) {
-    await previewer.appendImages([...input.files])
-    previewer.preview()
+    [...input.files].forEach((file) => {
+      const image = new Image(file)
+      slider.appendPreviewer(image)
+    })
+    slider.preview()
   }
 }
 
-const sortImageByName = (images) => {
-  return images.sort((a, b) => Number(a.file.name.replace(/\D/g, '')) - Number(b.file.name.replace(/\D/g, '')))
+const sortPreviewerByName = (previewer) => {
+  return previewer.sort((a, b) => Number(a.name.replace(/\D/g, '')) - Number(b.name.replace(/\D/g, '')))
 }
